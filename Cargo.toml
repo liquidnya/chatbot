@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "chatbot-lib",
+    "chatbot-macro",
+]

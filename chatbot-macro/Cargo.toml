@@ -1,0 +1,21 @@
+[package]
+name = "chatbot-macro"
+version = "0.1.1"
+authors = ["Nya <7364785+liquidnya@users.noreply.github.com>"]
+license = "MIT OR Apache-2.0"
+edition = "2018"
+
+[lib]
+proc-macro = true
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+syn = { version="1.0", features = ["full", "parsing", "printing"] }
+quote = "1.0"
+chatbot-lib = { path = "../chatbot-lib" }
+indexmap = "1.7"
+url = "2.2"
+proc-macro2 = "*"
+
+[dev-dependencies]
+anyhow = "*"
