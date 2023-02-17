@@ -153,6 +153,69 @@ pub fn commands(item: TokenStream) -> TokenStream {
     code.into()
 }
 
+#[proc_macro]
+pub fn commands_reply(item: TokenStream) -> TokenStream {
+    let commands = syn::parse_macro_input!(item as Commands);
+    let name = commands.ident;
+    let commands = commands.commands.into_iter().map(|command| {
+        let span = command.path.span();
+        let command = command.path;
+        let command_str = command
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<String>>()
+            .join("::");
+        let mut show_syntax = command.clone();
+        if let Some(id) = show_syntax.segments.last_mut() {
+            id.ident = format_ident!("show_syntax_{}", id.ident);
+        }
+        let mut command = command;
+        if let Some(id) = command.segments.last_mut() {
+            id.ident = format_ident!("async_command_{}", id.ident);
+        }
+        quote_spanned! {span=>
+            match #command (request).await {
+                response @ Ok(_) => {
+                    log::debug!("Calling {}", #command_str);
+                    return response.ok();
+                },
+                Err(e) => {
+                    if #show_syntax.0 {
+                        if e.is_argument_error() {
+                            return Some(::chatbot_lib::response::Response::new(#show_syntax.1).as_reply());
+                        } else if e.is_subcommand_mismatch() {
+                            if let Some(shared_syntax) = &mut shared_syntax {
+                                shared_syntax.append(#show_syntax.1);
+                            } else {
+                                shared_syntax = Some(::chatbot_lib::command::FindSharedSyntax::new(#show_syntax.1));
+                            }
+                        }
+                    }
+                    log::debug!("Error calling {}: {:?}", #command_str, e)
+                },
+            };
+        }
+    });
+    let code = quote! {
+        struct #name;
+
+        #[async_trait]
+        impl CommandProcessor for #name {
+            async fn process<'a>(&self, request: &'a CommandRequest<'a>) -> Option<Response<'a>> {
+                let mut shared_syntax : Option<::chatbot_lib::command::FindSharedSyntax> = None;
+                #(#commands)*
+                if let Some(shared_syntax) = shared_syntax {
+                    // TODO: use Display instead of ToString
+                    return Some(::chatbot_lib::response::Response::new(shared_syntax.to_string()).as_reply());
+                }
+                None
+            }
+        }
+    };
+    code.into()
+}
+
 enum MetaArguments {
     Arguments(Punctuated<syn::MetaNameValue, syn::Token![,]>),
     Str(syn::LitStr),
@@ -268,6 +331,17 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
         Ok(value) => value,
     };
+
+    let reply_default = syn::LitBool {
+        value: false,
+        span: proc_macro2::Span::call_site(),
+    };
+    let reply = get_bool_argument(&meta_arguments, "reply").unwrap_or(Ok(&reply_default));
+    let reply = match reply {
+        Err(e) => return e.to_compile_error().into(),
+        Ok(value) => value,
+    };
+
     let result_default = syn::LitBool {
         value: false,
         span: proc_macro2::Span::call_site(),
@@ -295,39 +369,55 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {
                 let result = async move {
                     let result = #name(#(#function_call),*).await;
-                    result.map(|result|::chatbot_lib::response::IntoResponse::into_response(result, request))
+                    if #reply {
+                        result.map(|result|::chatbot_lib::response::IntoResponse::into_response(result, request).as_reply())
+                    } else {
+                        result.map(|result|::chatbot_lib::response::IntoResponse::into_response(result, request))
+                    }
                 };
                 Ok(result)
             }
         } else {
             quote! {
                 let result = #name(#(#function_call),*);
-                Ok(result.map(|result|::chatbot_lib::response::IntoResponse::into_response(result, request)))
+                if #reply {
+                    Ok(result.map(|result|::chatbot_lib::response::IntoResponse::into_response(result, request).as_reply()))
+                } else {
+                    Ok(result.map(|result|::chatbot_lib::response::IntoResponse::into_response(result, request)))
+                }
             }
         }
     } else if is_async {
         quote! {
             let result = async move {
                 let result = #name(#(#function_call),*).await;
-                ::chatbot_lib::response::IntoResponse::into_response(result, request)
+                if #reply {
+                    ::chatbot_lib::response::IntoResponse::into_response(result, request).as_reply()
+                } else {
+                    ::chatbot_lib::response::IntoResponse::into_response(result, request)
+                }
             };
             Ok(result)
         }
     } else {
         quote! {
             let result = #name(#(#function_call),*);
-            Ok(::chatbot_lib::response::IntoResponse::into_response(result, request))
+            if #reply {
+                Ok(::chatbot_lib::response::IntoResponse::into_response(result, request).as_reply())
+            } else {
+                Ok(::chatbot_lib::response::IntoResponse::into_response(result, request))
+            }
         }
     };
     let return_type = if result.value {
         if is_async {
             quote!(
                 impl core::future::Future<
-                    Output = Result<
-                        ::chatbot_lib::response::Response<'s>,
-                        ::chatbot_lib::command::CommandError<anyhow::Error>,
-                    >,
-                > + 's
+                        Output = Result<
+                            ::chatbot_lib::response::Response<'s>,
+                            ::chatbot_lib::command::CommandError<anyhow::Error>,
+                        >,
+                    > + 's
             )
         } else {
             quote!(
@@ -360,7 +450,7 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
             let ident = &arg.ident;
             argument_parsers.extend(quote_spanned! {arg.ty.span()=>
                 #[allow(non_snake_case)]
-                let #ident = ::chatbot_lib::command::from_command_request_anyhow(&request)?;
+                let #ident = ::chatbot_lib::command::from_command_request_anyhow(request)?;
             });
         }
     }

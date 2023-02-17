@@ -1,4 +1,4 @@
-use crate::user::User;
+use super::{Bot, Channel, Sender};
 use derive_more::{Deref, From};
 
 #[derive(Debug, Clone)]
@@ -43,49 +43,6 @@ impl<'req> CommandRequest<'req> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Sender<'a> {
-    user: User<'a>,
-    moderator: bool,
-    broadcaster: bool,
-}
-
-impl<'a> Sender<'a> {
-    pub fn new(user: User<'a>, moderator: bool, broadcaster: bool) -> Self {
-        Self {
-            user,
-            moderator,
-            broadcaster,
-        }
-    }
-
-    pub fn is_moderator(&self) -> bool {
-        self.moderator
-    }
-
-    pub fn is_broadcaster(&self) -> bool {
-        self.broadcaster
-    }
-}
-
-impl<'a> From<User<'a>> for Sender<'a> {
-    fn from(user: User<'a>) -> Self {
-        Sender::new(user, false, false)
-    }
-}
-
-impl<'a> std::ops::Deref for Sender<'a> {
-    type Target = User<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.user
-    }
-}
-
-#[derive(Debug, Clone, Deref, From)]
-pub struct Channel<'a>(User<'a>);
-#[derive(Debug, Clone, Deref, From)]
-pub struct Bot<'a>(User<'a>);
 #[derive(Debug, Clone, Deref, From)]
 pub struct Command<'a>(&'a str);
 

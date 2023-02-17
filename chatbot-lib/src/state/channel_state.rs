@@ -63,9 +63,11 @@ impl ContainerBuilder {
     }
 }
 
+pub type ChannelContainerTemplate = Box<dyn Fn(&str, &ContainerBuilder) + Send + Sync>;
+
 pub struct ChannelContainer {
     container: RwLock<HashMap<String, Arc<Container![Send + Sync]>>>,
-    template: Box<dyn Fn(&String, &ContainerBuilder) + Send + Sync>,
+    template: ChannelContainerTemplate,
 }
 
 #[derive(From)]
@@ -80,7 +82,7 @@ impl<'a> core::ops::Deref for ChannelContainerGuard<'a> {
 }
 
 impl ChannelContainer {
-    pub fn new(f: Box<dyn Fn(&String, &ContainerBuilder) + Send + Sync>) -> Self {
+    pub fn new(f: ChannelContainerTemplate) -> Self {
         Self {
             container: RwLock::new(HashMap::new()),
             template: f,
@@ -99,8 +101,8 @@ impl ChannelContainer {
         String: Borrow<T>,
         T: Eq + Hash + ToOwned<Owned = String>,
     {
-        fn get_channel_container<'a, K: ?Sized>(
-            map: RwLockReadGuard<'a, HashMap<String, Arc<Container![Send + Sync]>>>,
+        fn get_channel_container<K: ?Sized>(
+            map: RwLockReadGuard<'_, HashMap<String, Arc<Container![Send + Sync]>>>,
             channel: &K,
         ) -> Option<Arc<Container![Send + Sync]>>
         where

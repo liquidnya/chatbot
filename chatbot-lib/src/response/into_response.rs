@@ -1,8 +1,32 @@
-use super::Response;
+use super::{command_response::CommandResponse, command_response::ReplyResponse, Response};
 use crate::request::CommandRequest;
 
 pub trait IntoResponse<'a> {
     fn into_response(self, request: &CommandRequest<'_>) -> Response<'a>;
+}
+
+impl<'a> IntoResponse<'a> for Response<'a> {
+    fn into_response(self, _request: &CommandRequest<'_>) -> Response<'a> {
+        self
+    }
+}
+
+impl<'a, T> IntoResponse<'a> for ReplyResponse<T>
+where
+    T: IntoResponse<'a>,
+{
+    fn into_response(self, request: &CommandRequest<'_>) -> Response<'a> {
+        self.0.into_response(request).as_reply()
+    }
+}
+
+impl<'a, T> IntoResponse<'a> for CommandResponse<T>
+where
+    T: IntoResponse<'a>,
+{
+    fn into_response(self, request: &CommandRequest<'_>) -> Response<'a> {
+        self.0.into_response(request).as_command()
+    }
 }
 
 impl<'a> IntoResponse<'a> for () {

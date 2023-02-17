@@ -54,7 +54,7 @@ fn rsplit_whitespace_once(value: &str) -> (&str, &str) {
 */
 impl<'a> CommandArguments<'a> {
     pub fn as_str(&self) -> &'a str {
-        (&self.str[self.range.clone()]).trim()
+        self.str[self.range.clone()].trim()
     }
 
     pub fn next_rest(&mut self) -> Option<<Self as Iterator>::Item> {
@@ -77,7 +77,7 @@ impl<'a> Iterator for CommandArguments<'a> {
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         let std::ops::Range { start, end } = self.range;
-        (&self.str[start..end])
+        self.str[start..end]
             .find(|c: char| !c.is_whitespace())
             .map(|i| start + i)
             .and_then(|start| {
@@ -101,7 +101,7 @@ impl<'a> FusedIterator for CommandArguments<'a> {}
 impl<'a> DoubleEndedIterator for CommandArguments<'a> {
     fn next_back(&mut self) -> Option<<Self as Iterator>::Item> {
         let std::ops::Range { start, end } = self.range;
-        (&self.str[start..end])
+        self.str[start..end]
             .rfind(|c: char| !c.is_whitespace())
             .map(|i| start + i + 1)
             .and_then(|end| {

@@ -1,9 +1,9 @@
 [package]
 name = "chatbot-lib"
-version = "0.1.1"
+version.workspace = true
+license.workspace = true
 authors = ["Nya <7364785+liquidnya@users.noreply.github.com>"]
-license = "MIT OR Apache-2.0"
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -17,14 +17,15 @@ url = "2.2"
 derive_more = {version = "0.99", default-features = false, features = ["from", "deref"]}
 twitchchat = { version = "0.14", features = ["tokio-util", "tokio-rustls", "webpki-roots", "tokio", "async"] }
 futures-io = "0.3"
-async-trait = "*"
+async-trait = "0.1.64"
 tokio = { version = "1.12", features = ["sync", "fs", "rt"] }
 serde = "*"
 arc-swap = "1.4"
-ron = "0.7.1"
+ron = "0.8"
 anyhow = "1.0"
 log = "0.4"
 tokio-compat-02 = "0.2"
-itertools = "*"
-chashmap = "*"
+itertools = "0.10.5"
+chashmap = "2.2.2"
 rand = "0.8.0"
+uuid = "1.1.2"

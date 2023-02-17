@@ -15,6 +15,14 @@ pub trait PersistedType:
 
     // might be called multiple times!
     fn init(channel: &str) -> Self;
+
+    fn handle_read_error(channel: &str, _error: anyhow::Error) -> Self {
+        Self::init(channel)
+    }
+
+    fn handle_write_error(_channel: &str, _error: anyhow::Error) {
+        // do nothing
+    }
 }
 
 pub(crate) struct Persisted<T: PersistedType> {
@@ -82,7 +90,7 @@ impl<'a, T: PersistedType> PersistedChannelState<'a, T> {
                         self.channel,
                         e
                     );
-                    None
+                    Some(<T as PersistedType>::handle_read_error(self.channel, e))
                 });
                 let result = result.unwrap_or_else(|| <T as PersistedType>::init(self.channel));
                 let result = Arc::new(result);
@@ -114,7 +122,7 @@ impl<'a, T: PersistedType> PersistedChannelState<'a, T> {
                     self.channel,
                     e
                 );
-                None
+                Some(<T as PersistedType>::handle_read_error(self.channel, e))
             });
             let result = result.unwrap_or_else(|| <T as PersistedType>::init(self.channel));
             let result = Arc::new(result);
@@ -134,6 +142,7 @@ impl<'a, T: PersistedType> PersistedChannelState<'a, T> {
                     self.channel,
                     e
                 );
+                <T as PersistedType>::handle_write_error(self.channel, e)
             }
             return (
                 old_value.expect("Expected value, since it was initialized and never set to None"),
@@ -209,7 +218,7 @@ async fn read_from_disk<T: PersistedType>(channel: &str) -> anyhow::Result<Optio
             // .create_new(true) // => could use create_new but then what happens if the file existed?
             .truncate(false)
             .create(false)
-            .open(&path);
+            .open(path);
         let file = match file {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

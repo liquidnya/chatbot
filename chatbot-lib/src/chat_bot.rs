@@ -1,8 +1,14 @@
 use crate::command::CommandProcessor;
-use crate::request::{Bot, Channel, Command, CommandRequest, FromCommandRequest, Sender};
-use crate::response::Response;
-use crate::state::{CachedChannelContainer, ChannelContainer, ChannelState, ChannelStateError, ChannelChatters};
+use crate::request::{
+    Bot, Channel, Command, CommandRequest, FilterPredicate, FilterRequest, FromCommandRequest,
+    Sender,
+};
+use crate::response::Responder;
+use crate::state::{
+    CachedChannelContainer, ChannelChatters, ChannelContainer, ChannelState, ChannelStateError,
+};
 use crate::user::User;
+use async_trait::async_trait;
 use derive_more::{Deref, From};
 use fmt::Display;
 use futures_io::{AsyncRead, AsyncWrite};
@@ -14,14 +20,15 @@ use std::fmt;
 use std::io::Write;
 use std::sync::Arc;
 use tokio_compat_02::FutureExt;
-use twitchchat::Encodable;
+use twitchchat::commands::privmsg;
 use twitchchat::connector::Connector;
-use twitchchat::messages::Commands;
-use twitchchat::messages::Privmsg;
+use twitchchat::messages::{ClearChat, Commands};
+use twitchchat::messages::{ClearMsg, Privmsg};
 use twitchchat::runner::Identity;
 use twitchchat::writer::AsyncWriter;
 use twitchchat::writer::MpscWriter;
 use twitchchat::AsyncRunner;
+use twitchchat::Encodable;
 use twitchchat::Status;
 use twitchchat::UserConfig;
 
@@ -37,7 +44,7 @@ impl Display for StateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
         match self {
             StateError::NoContext => write!(f, "CommandRequest is missing context"),
-            StateError::NoValue(type_name) => write!(f, "No value set for type {}", type_name),
+            StateError::NoValue(type_name) => write!(f, "No value set for type {type_name}"),
         }
     }
 }
@@ -48,13 +55,7 @@ impl<'a, 'req, T: Send + Sync + 'static> FromCommandRequest<'a, 'req> for State<
     type Error = StateError;
 
     fn from_command_request(request: &'a CommandRequest<'req>) -> Result<Self, Self::Error> {
-        request
-            .context
-            .ok_or(StateError::NoContext)?
-            .container
-            .try_get()
-            .ok_or_else(|| StateError::NoValue(std::any::type_name::<T>()))
-            .map(State::from)
+        request.context.ok_or(StateError::NoContext)?.state()
     }
 }
 
@@ -65,11 +66,7 @@ impl<'a, 'req, T: Send + Sync + 'static> FromCommandRequest<'a, 'req> for Channe
         request
             .context
             .ok_or(ChannelStateError::NoContext)?
-            .channel_container
-            .ok_or(ChannelStateError::NoChannelContainer)?
-            .try_get()
-            .ok_or_else(|| ChannelStateError::NoValue(std::any::type_name::<T>()))
-            .map(ChannelState::from)
+            .channel_state()
     }
 }
 
@@ -77,14 +74,41 @@ impl<'a, 'req, T: Send + Sync + 'static> FromCommandRequest<'a, 'req> for Channe
 pub(crate) struct ChatBotContext<'req> {
     container: &'req Container![Send + Sync],
     channel_container: Option<&'req Container![Send + Sync]>,
+    chatters: &'req ChannelChatters,
 }
 
 impl<'req> ChatBotContext<'req> {
-    fn new(container: &'req Container![Send + Sync], channel_container: Option<&'req Container![Send + Sync]>) -> Self {
+    fn new(
+        container: &'req Container![Send + Sync],
+        channel_container: Option<&'req Container![Send + Sync]>,
+        chatters: &'req ChannelChatters,
+    ) -> Self {
         Self {
             container,
             channel_container,
+            chatters,
         }
+    }
+
+    pub fn chatters(&self) -> ChannelChatters {
+        self.chatters.clone()
+    }
+
+    pub fn state<T: Send + Sync + 'static>(&self) -> Result<State<'req, T>, StateError> {
+        self.container
+            .try_get()
+            .ok_or_else(|| StateError::NoValue(std::any::type_name::<T>()))
+            .map(State::from)
+    }
+
+    pub fn channel_state<T: Send + Sync + 'static>(
+        &self,
+    ) -> Result<ChannelState<'req, T>, ChannelStateError> {
+        self.channel_container
+            .ok_or(ChannelStateError::NoChannelContainer)?
+            .try_get()
+            .ok_or_else(|| ChannelStateError::NoValue(std::any::type_name::<T>()))
+            .map(ChannelState::from)
     }
 }
 
@@ -101,6 +125,8 @@ pub struct ChatBot<'a, C, P> {
     container: Container![Send + Sync],
     channel_container: Option<&'a ChannelContainer>,
     chatters: ChannelChatters,
+    ignore_self: bool,
+    filter: Option<FilterPredicate>,
 }
 
 impl<'a, C> ChatBot<'a, C, ()> {
@@ -112,6 +138,8 @@ impl<'a, C> ChatBot<'a, C, ()> {
             container: <Container![Send + Sync]>::new(),
             channel_container: Option::<&'a ChannelContainer>::None,
             chatters: ChannelChatters::new(),
+            ignore_self: true,
+            filter: None,
         }
     }
 
@@ -125,7 +153,9 @@ impl<'a, C> ChatBot<'a, C, ()> {
             user_config: self.user_config,
             container: self.container,
             channel_container: self.channel_container,
-            chatters: ChannelChatters::new(),
+            chatters: self.chatters,
+            ignore_self: self.ignore_self,
+            filter: self.filter,
         }
     }
 }
@@ -149,11 +179,45 @@ impl<'a, C, P> ChatBot<'a, C, P> {
             user_config: self.user_config,
             container: self.container,
             channel_container: Some(channel_container),
-            chatters: ChannelChatters::new(),
+            chatters: self.chatters,
+            ignore_self: self.ignore_self,
+            filter: self.filter,
         }
     }
 
-    pub fn chatters(&self) -> ChannelChatters{
+    pub fn process_self<'b, 'c: 'b>(self) -> ChatBot<'b, C, P>
+    where
+        'a: 'b,
+    {
+        ChatBot {
+            connector: self.connector,
+            command_processor: self.command_processor,
+            user_config: self.user_config,
+            container: self.container,
+            channel_container: self.channel_container,
+            chatters: self.chatters,
+            ignore_self: false,
+            filter: self.filter,
+        }
+    }
+
+    pub fn filter<'b, 'c: 'b>(self, predicate: FilterPredicate) -> ChatBot<'b, C, P>
+    where
+        'a: 'b,
+    {
+        ChatBot {
+            connector: self.connector,
+            command_processor: self.command_processor,
+            user_config: self.user_config,
+            container: self.container,
+            channel_container: self.channel_container,
+            chatters: self.chatters,
+            ignore_self: self.ignore_self,
+            filter: Some(predicate),
+        }
+    }
+
+    pub fn chatters(&self) -> ChannelChatters {
         self.chatters.clone()
     }
 }
@@ -236,13 +300,28 @@ impl<'a> From<&'a Privmsg<'_>> for Channel<'a> {
     }
 }
 
+impl<'a> From<&'a ClearChat<'_>> for Channel<'a> {
+    fn from(value: &'a ClearChat) -> Self {
+        let user_id = value.room_id().and_then(|value| value.parse().ok()); // TODO: user_id is u64 instead of i64
+        User::new(value.channel().trim_start_matches('#'), None, user_id).into()
+    }
+}
+
+impl<'a> From<&'a ClearMsg<'_>> for Channel<'a> {
+    fn from(value: &'a ClearMsg) -> Self {
+        let user_id = value.tags().get_parsed("room-id"); // TODO: user_id is u64 instead of i64
+        User::new(value.channel().trim_start_matches('#'), None, user_id).into()
+    }
+}
+
 struct MessageHandler<'msg, P> {
     bot: &'msg Bot<'msg>,
-    container: &'msg Container![Send + Sync],
-    channel_container: Option<CachedChannelContainer<'msg>>,
+    containers: Containers<'msg>,
     command_processor: &'msg P,
     writer: AsyncWriter<MpscWriter>,
     chatters: ChannelChatters,
+    ignore_self: bool,
+    filter: Option<FilterPredicate>,
 }
 
 pub struct PrivmsgReply<'a> {
@@ -262,17 +341,67 @@ impl<'a> Encodable for PrivmsgReply<'a> {
     where
         W: Write + ?Sized,
     {
-        if !self.msg.trim_start().starts_with(|c| c == '.' || c == '/') { // do not reply when using a twitch command
-            if let Some(id) = self.reply_to.tags().get("id") { // find message id to reply to
-                return write_nl!(buf, "@reply-parent-msg-id={} PRIVMSG {} :{}", id, twitchchat::commands::Channel::new(self.reply_to.channel()), self.msg);
+        log::trace!("reply message");
+        if !self.msg.trim_start().starts_with(|c| c == '.' || c == '/') {
+            // do not reply when using a twitch command
+            if let Some(id) = self.reply_to.tags().get("id") {
+                // find message id to reply to
+                return write_nl!(
+                    buf,
+                    "@reply-parent-msg-id={} PRIVMSG {} :{}",
+                    id,
+                    twitchchat::commands::Channel::new(self.reply_to.channel()),
+                    self.msg
+                );
             }
         }
-        write_nl!(buf, "PRIVMSG {} :{}", twitchchat::commands::Channel::new(self.reply_to.channel()), self.msg)
+        write_nl!(
+            buf,
+            "PRIVMSG {} :{}",
+            twitchchat::commands::Channel::new(self.reply_to.channel()),
+            self.msg
+        )
     }
 }
 
 pub const fn privmsg_reply<'a>(reply_to: &'a Privmsg<'a>, msg: &'a str) -> PrivmsgReply<'a> {
     PrivmsgReply { reply_to, msg }
+}
+
+struct MessageResponder<'a> {
+    message: &'a Privmsg<'a>,
+    writer: &'a mut AsyncWriter<MpscWriter>,
+}
+
+#[async_trait]
+impl<'a> Responder for MessageResponder<'a> {
+    async fn respond(&mut self, response: &crate::response::Response<'_>) -> tokio::io::Result<()> {
+        if let Some(text) = response
+            .response()
+            // TODO: check if filter is necessary
+            .filter(|response_text| {
+                response.command() || !response_text.trim_start().starts_with('/')
+            })
+            .filter(|response_text| {
+                response.command() || !response_text.trim_start().starts_with('.')
+            })
+            .filter(|response_text| !response_text.is_empty() && !response_text.trim().is_empty())
+        {
+            if response.reply() {
+                let message = privmsg_reply(self.message, text);
+                self.writer.encode(message).compat().await?;
+            } else {
+                let message = privmsg(self.message.channel(), text);
+                self.writer.encode(message).compat().await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+struct Containers<'msg> {
+    container: &'msg Container![Send + Sync],
+    channel_container: Option<CachedChannelContainer<'msg>>,
 }
 
 impl<'msg, P> MessageHandler<'msg, P>
@@ -281,36 +410,99 @@ where
 {
     fn new(
         bot: &'msg Bot<'msg>,
-        container: &'msg Container![Send + Sync],
-        channel_container: Option<CachedChannelContainer<'msg>>,
+        containers: Containers<'msg>,
         command_processor: &'msg P,
         writer: AsyncWriter<MpscWriter>,
         chatters: ChannelChatters,
+        ignore_self: bool,
+        filter: Option<FilterPredicate>,
     ) -> Self {
         Self {
             bot,
-            container,
-            channel_container,
+            containers,
             command_processor,
             writer,
             chatters,
+            ignore_self,
+            filter,
         }
+    }
+
+    async fn clear_chat(&mut self, message: &'_ ClearChat<'_>) -> Result<(), Box<dyn Error>> {
+        let channel: Channel = message.into();
+        self.chatters
+            .clear_chat(
+                &channel,
+                message.tags().get_parsed("target-user-id"),
+                message.name(),
+            )
+            .await;
+        Ok(())
+    }
+
+    async fn clear_msg(&mut self, message: &'_ ClearMsg<'_>) -> Result<(), Box<dyn Error>> {
+        let channel: Channel = message.into();
+        self.chatters
+            .clear_message(&channel, message.target_msg_id(), message.login())
+            .await;
+        Ok(())
     }
 
     async fn handle(&mut self, message: &'_ Privmsg<'_>) -> Result<(), Box<dyn Error>> {
         let bot = self.bot;
-        let container = self.container;
+        let container = self.containers.container;
 
-        let channel: Channel =message.into();
+        let channel: Channel = message.into();
         let sender: Sender = message.into();
 
+        self.chatters
+            .notice_chatter(&channel, &sender, message.data(), "id")
+            .await;
 
-        self.chatters.notice_chatter(&channel, &sender, message.data());
+        let mut responder = MessageResponder {
+            message,
+            writer: &mut self.writer,
+        };
+
+        if let Some(msg_id) = message.tags().get("id") {
+            if let Some(filter) = self.filter.as_mut() {
+                // TODO: create context only once
+                let channel: Channel = message.into();
+                let sender: Sender = message.into();
+                let mut channel_container_rc = None;
+                if let Some(channel_container) = &mut self.containers.channel_container {
+                    channel_container_rc = Some(channel_container.get(message.channel()).await);
+                }
+                let context = ChatBotContext::new(
+                    container,
+                    channel_container_rc
+                        .as_ref()
+                        .map(|rc| rc as &Arc<Container![Send + Sync]> as &Container![Send + Sync]),
+                    &self.chatters,
+                );
+                let filter_request =
+                    FilterRequest::new(message.data(), sender, channel, bot, &context);
+                if !(filter)(filter_request, &mut responder).await {
+                    self.chatters
+                        .clear_message(&message.into(), Some(msg_id), Some(message.name()))
+                        .await;
+                    responder
+                        .respond(
+                            &crate::response::Response::new(format!(".delete {msg_id}"))
+                                .as_command(),
+                        )
+                        .await?;
+                    return Ok(());
+                }
+            }
+        }
 
         if let Ok(command) = Command::try_from(message) {
+            log::trace!("Command found");
+
             // unpack channel container at the last moment possible
             let mut channel_container_rc = None;
-            if let Some(channel_container) = &mut self.channel_container {
+            if let Some(channel_container) = &mut self.containers.channel_container {
                 channel_container_rc = Some(channel_container.get(message.channel()).await);
             }
 
@@ -319,23 +511,18 @@ where
                 channel_container_rc
                     .as_ref()
                     .map(|rc| rc as &Arc<Container![Send + Sync]> as &Container![Send + Sync]),
+                &self.chatters,
             );
             let request = CommandRequest::new(command, sender, channel, bot, &context);
-            if request.sender() as &User == bot as &User {
+
+            log::trace!("request: {:?}", request);
+
+            if self.ignore_self && request.sender() as &User == bot as &User {
+                log::debug!("Ignoring message from bot {:?}", bot);
                 return Ok(()); // do not handle messages from the bot
             }
-            if let Some(response) = self
-                .command_processor
-                .process(&request)
-                .await
-                .as_ref()
-                .and_then(Response::response)
-                // TODO: check if filter is necessary
-                .filter(|response| !response.trim_start().starts_with('/') || response.trim_start().starts_with("/announce"))
-                .filter(|response| !response.trim_start().starts_with('.') || response.trim_start().starts_with(".announce"))
-            {
-                let message = privmsg_reply(message, response);
-                self.writer.encode(message).compat().await?;
+            if let Some(response) = self.command_processor.process(&request).await.as_ref() {
+                responder.respond(response).await?;
             }
         }
         Ok(())
@@ -348,6 +535,7 @@ where
     for<'o> &'o C::Output: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     P: CommandProcessor,
 {
+    #[allow(clippy::needless_late_init)]
     pub async fn run(
         self,
         channels: impl std::iter::IntoIterator<Item = &str>,
@@ -355,14 +543,17 @@ where
         let user_config = self.user_config;
         let command_processor = self.command_processor;
         let channel_container = self.channel_container;
+        let bot: Bot;
         let mut container = self.container;
+        let mut runner;
+        let mut handler;
 
         container.freeze();
-        let mut runner = AsyncRunner::connect(self.connector, user_config)
+        runner = AsyncRunner::connect(self.connector, user_config)
             .compat()
             .await?;
         let identity = runner.identity.clone(); // TODO: store bot user somewhere in memeory
-        let bot: Bot = (&identity)
+        bot = (&identity)
             .try_into()
             .unwrap_or_else(|_| user_config.into());
 
@@ -376,13 +567,19 @@ where
             log::info!("Joined channel {}", channel);
         }
 
-        let mut handler = MessageHandler::new(
+        let containers = Containers {
+            container: &container,
+            channel_container: channel_container.map(ChannelContainer::create_local_cache),
+        };
+
+        handler = MessageHandler::new(
             &bot,
-            &container,
-            channel_container.map(ChannelContainer::create_local_cache),
+            containers,
             &command_processor,
             runner.writer(),
             self.chatters.clone(),
+            self.ignore_self,
+            self.filter,
         );
 
         loop {
@@ -393,6 +590,8 @@ where
                     log::trace!("Message: {:#?}", commands);
                     match commands {
                         Commands::Privmsg(message) => handler.handle(&message).await?,
+                        Commands::ClearChat(message) => handler.clear_chat(&message).await?,
+                        Commands::ClearMsg(message) => handler.clear_msg(&message).await?,
                         Commands::Ping(_) | Commands::Pong(_) => {}
                         _ => {}
                     }

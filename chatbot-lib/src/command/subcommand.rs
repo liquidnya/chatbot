@@ -44,7 +44,7 @@ impl<'a> FindSharedSyntax<'a> {
         loop {
             let next_prefix = prefix.next();
             let next_command = command.next();
-            if next_prefix == None {
+            if next_prefix.is_none() {
                 if let Some(next_command) = next_command {
                     self.choice.push(next_command);
                 }

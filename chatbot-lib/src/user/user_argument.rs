@@ -5,6 +5,12 @@ use core::fmt::{Display, Error, Formatter};
 #[derive(Debug, Clone)]
 pub struct UserArgument<'a>(&'a str);
 
+impl<'a> From<&'a UserArgument<'a>> for UserArgument<'a> {
+    fn from(value: &'a UserArgument<'a>) -> UserArgument<'a> {
+        UserArgument(value.0)
+    }
+}
+
 impl<'a> UserArgument<'a> {
     pub fn new(string: &'a str) -> Self {
         Self(string.strip_prefix('@').unwrap_or(string))
@@ -16,6 +22,10 @@ impl<'a> UserArgument<'a> {
 
     pub fn from_display_name(display_name: &'a str) -> Self {
         Self(display_name)
+    }
+
+    pub fn as_argument(&self) -> &str {
+        self.0
     }
 }
 
