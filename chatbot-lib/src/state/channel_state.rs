@@ -4,7 +4,7 @@ use core::fmt;
 use core::fmt::Display;
 use core::hash::Hash;
 use derive_more::{Deref, From};
-use state::Container;
+use state::TypeMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,12 +13,12 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 
 pub(crate) struct CachedChannelContainer<'a> {
     #[allow(clippy::redundant_allocation)] // TODO: maybe there is a way to make all of this better
-    cache: HashMap<String, Rc<Arc<Container![Send + Sync]>>>, // the Rc is just used, such that the Arc (within the Rc) can be copied without having to synchronise the atomic reference in the arc
+    cache: HashMap<String, Rc<Arc<TypeMap![Send + Sync]>>>, // the Rc is just used, such that the Arc (within the Rc) can be copied without having to synchronise the atomic reference in the arc
     container: &'a ChannelContainer,
 }
 
 impl<'a> CachedChannelContainer<'a> {
-    pub async fn get<'b, T: ?Sized>(&'b mut self, channel: &T) -> Rc<Arc<Container![Send + Sync]>>
+    pub async fn get<'b, T: ?Sized>(&'b mut self, channel: &T) -> Rc<Arc<TypeMap![Send + Sync]>>
     where
         String: Borrow<T>,
         T: Eq + Hash + ToOwned<Owned = String>,
@@ -36,17 +36,17 @@ impl<'a> CachedChannelContainer<'a> {
 }
 
 pub struct ContainerBuilder {
-    inner: Container![Send + Sync],
+    inner: TypeMap![Send + Sync],
 }
 
 impl ContainerBuilder {
     fn new() -> Self {
         ContainerBuilder {
-            inner: <Container![Send + Sync]>::new(),
+            inner: <TypeMap![Send + Sync]>::new(),
         }
     }
 
-    fn into_inner(self) -> Container![Send + Sync] {
+    fn into_inner(self) -> TypeMap![Send + Sync] {
         self.inner
     }
 
@@ -66,15 +66,15 @@ impl ContainerBuilder {
 pub type ChannelContainerTemplate = Box<dyn Fn(&str, &ContainerBuilder) + Send + Sync>;
 
 pub struct ChannelContainer {
-    container: RwLock<HashMap<String, Arc<Container![Send + Sync]>>>,
+    container: RwLock<HashMap<String, Arc<TypeMap![Send + Sync]>>>,
     template: ChannelContainerTemplate,
 }
 
 #[derive(From)]
-pub struct ChannelContainerGuard<'a>(RwLockReadGuard<'a, Container![Send + Sync]>);
+pub struct ChannelContainerGuard<'a>(RwLockReadGuard<'a, TypeMap![Send + Sync]>);
 
 impl<'a> core::ops::Deref for ChannelContainerGuard<'a> {
-    type Target = Container![Send + Sync];
+    type Target = TypeMap![Send + Sync];
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -96,20 +96,20 @@ impl ChannelContainer {
         }
     }
 
-    pub async fn get_arc<T: ?Sized>(&self, channel: &T) -> Arc<Container![Send + Sync]>
+    pub async fn get_arc<T: ?Sized>(&self, channel: &T) -> Arc<TypeMap![Send + Sync]>
     where
         String: Borrow<T>,
         T: Eq + Hash + ToOwned<Owned = String>,
     {
         fn get_channel_container<K: ?Sized>(
-            map: RwLockReadGuard<'_, HashMap<String, Arc<Container![Send + Sync]>>>,
+            map: RwLockReadGuard<'_, HashMap<String, Arc<TypeMap![Send + Sync]>>>,
             channel: &K,
-        ) -> Option<Arc<Container![Send + Sync]>>
+        ) -> Option<Arc<TypeMap![Send + Sync]>>
         where
             String: Borrow<K>,
             K: Eq + Hash,
         {
-            tokio::sync::RwLockReadGuard::<'_, HashMap<String, Arc<Container![Send + Sync]>>>::try_map(
+            tokio::sync::RwLockReadGuard::<'_, HashMap<String, Arc<TypeMap![Send + Sync]>>>::try_map(
                 map,
                 |map| map.get(channel),
             )
@@ -143,21 +143,21 @@ impl ChannelContainer {
         T: Eq + Hash + ToOwned<Owned = String>,
     {
         fn get_channel_guard<'a, K: ?Sized>(
-            map: RwLockReadGuard<'a, HashMap<String, Arc<Container![Send + Sync]>>>,
+            map: RwLockReadGuard<'a, HashMap<String, Arc<TypeMap![Send + Sync]>>>,
             channel: &K,
         ) -> Option<ChannelContainerGuard<'a>>
         where
             String: Borrow<K>,
             K: Eq + Hash,
         {
-            tokio::sync::RwLockReadGuard::<'_, HashMap<String, Arc<Container![Send + Sync]>>>::try_map(
+            tokio::sync::RwLockReadGuard::<'_, HashMap<String, Arc<TypeMap![Send + Sync]>>>::try_map(
                 map,
                 |map| map.get(channel),
             )
             .ok()
             .map(|guard| {
-                tokio::sync::RwLockReadGuard::<'_, Arc<Container![Send + Sync]>>::map(guard, |container| {
-                    container as &Container![Send + Sync]
+                tokio::sync::RwLockReadGuard::<'_, Arc<TypeMap![Send + Sync]>>::map(guard, |container| {
+                    container as &TypeMap![Send + Sync]
                 })
             })
             .map(ChannelContainerGuard::from)

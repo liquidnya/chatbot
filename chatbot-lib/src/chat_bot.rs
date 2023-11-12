@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use derive_more::{Deref, From};
 use fmt::Display;
 use futures_io::{AsyncRead, AsyncWrite};
-use state::Container;
+use state::TypeMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::error::Error;
@@ -72,15 +72,15 @@ impl<'a, 'req, T: Send + Sync + 'static> FromCommandRequest<'a, 'req> for Channe
 
 #[derive(Clone)]
 pub(crate) struct ChatBotContext<'req> {
-    container: &'req Container![Send + Sync],
-    channel_container: Option<&'req Container![Send + Sync]>,
+    container: &'req TypeMap![Send + Sync],
+    channel_container: Option<&'req TypeMap![Send + Sync]>,
     chatters: &'req ChannelChatters,
 }
 
 impl<'req> ChatBotContext<'req> {
     fn new(
-        container: &'req Container![Send + Sync],
-        channel_container: Option<&'req Container![Send + Sync]>,
+        container: &'req TypeMap![Send + Sync],
+        channel_container: Option<&'req TypeMap![Send + Sync]>,
         chatters: &'req ChannelChatters,
     ) -> Self {
         Self {
@@ -122,7 +122,7 @@ pub struct ChatBot<'a, C, P> {
     connector: C,
     command_processor: P,
     user_config: &'a UserConfig,
-    container: Container![Send + Sync],
+    container: TypeMap![Send + Sync],
     channel_container: Option<&'a ChannelContainer>,
     chatters: ChannelChatters,
     ignore_self: bool,
@@ -135,7 +135,7 @@ impl<'a, C> ChatBot<'a, C, ()> {
             connector,
             command_processor: (),
             user_config,
-            container: <Container![Send + Sync]>::new(),
+            container: <TypeMap![Send + Sync]>::new(),
             channel_container: Option::<&'a ChannelContainer>::None,
             chatters: ChannelChatters::new(),
             ignore_self: true,
@@ -400,7 +400,7 @@ impl<'a> Responder for MessageResponder<'a> {
 }
 
 struct Containers<'msg> {
-    container: &'msg Container![Send + Sync],
+    container: &'msg TypeMap![Send + Sync],
     channel_container: Option<CachedChannelContainer<'msg>>,
 }
 
@@ -477,7 +477,7 @@ where
                     container,
                     channel_container_rc
                         .as_ref()
-                        .map(|rc| rc as &Arc<Container![Send + Sync]> as &Container![Send + Sync]),
+                        .map(|rc| rc as &Arc<TypeMap![Send + Sync]> as &TypeMap![Send + Sync]),
                     &self.chatters,
                 );
                 let filter_request =
@@ -510,7 +510,7 @@ where
                 container,
                 channel_container_rc
                     .as_ref()
-                    .map(|rc| rc as &Arc<Container![Send + Sync]> as &Container![Send + Sync]),
+                    .map(|rc| rc as &Arc<TypeMap![Send + Sync]> as &TypeMap![Send + Sync]),
                 &self.chatters,
             );
             let request = CommandRequest::new(command, sender, channel, bot, &context);

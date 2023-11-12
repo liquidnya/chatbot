@@ -2,14 +2,13 @@
 name = "chatbot-lib"
 version.workspace = true
 license.workspace = true
-authors = ["Nya <7364785+liquidnya@users.noreply.github.com>"]
+authors = ["Nya"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-
-state = "0.5"
+state = "0.6.0"
 humantime = "2.1"
 chrono = "0.4"
 http = "0.2"
@@ -25,7 +24,7 @@ ron = "0.8"
 anyhow = "1.0"
 log = "0.4"
 tokio-compat-02 = "0.2"
-itertools = "0.10.5"
+itertools = "0.11.0"
 chashmap = "2.2.2"
 rand = "0.8.0"
 uuid = "1.1.2"

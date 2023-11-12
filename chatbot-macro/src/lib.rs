@@ -46,7 +46,7 @@ fn get_argument_names<T>(args: &Punctuated<FnArg, T>) -> syn::Result<Vec<Argumen
             }
         } else {
             return Err(syn::Error::new_spanned(
-                &arg,
+                arg,
                 "self is not allowed for this macro",
             ));
         }
@@ -250,13 +250,17 @@ fn get_str_argument<'a>(
         MetaArguments::Arguments(args) => args
             .iter()
             .find(|arg| arg.path.is_ident(name))
-            .map(|arg| &arg.lit)
-            .map(|lit| {
+            .and_then(|arg: &syn::MetaNameValue| match &arg.value {
+                syn::Expr::Lit(lit) => Some(lit),
+                _ => None,
+            })
+            .map(|expr_lit| {
+                let lit = &expr_lit.lit;
                 if let syn::Lit::Str(str) = lit {
                     Ok(str)
                 } else {
                     Err(syn::Error::new_spanned(
-                        &lit,
+                        lit,
                         format!("expected a string literal for `{}`", name),
                     ))
                 }
@@ -274,13 +278,17 @@ fn get_bool_argument<'a>(
         MetaArguments::Arguments(args) => args
             .iter()
             .find(|arg| arg.path.is_ident(name))
-            .map(|arg| &arg.lit)
-            .map(|lit| {
+            .and_then(|arg| match &arg.value {
+                syn::Expr::Lit(lit) => Some(lit),
+                _ => None,
+            })
+            .map(|expr_lit| {
+                let lit = &expr_lit.lit;
                 if let syn::Lit::Bool(bool) = lit {
                     Ok(bool)
                 } else {
                     Err(syn::Error::new_spanned(
-                        &lit,
+                        lit,
                         format!("expected a string literal for `{}`", name),
                     ))
                 }
