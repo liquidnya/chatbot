@@ -133,8 +133,8 @@ impl<'a> CommandPatternScanner<'a> {
     }
 }
 
-impl<'a, 'b> CommandPatternScanner<'a> {
-    pub fn scan(&mut self, token: CommandPatternToken<'b>) -> Option<TokenStream> {
+impl CommandPatternScanner<'_> {
+    pub fn scan(&mut self, token: CommandPatternToken<'_>) -> Option<TokenStream> {
         let mut err = None;
         if token.pattern.is_optional() {
             self.optional = true;

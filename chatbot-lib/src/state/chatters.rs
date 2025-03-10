@@ -6,8 +6,8 @@ use crate::user::User;
 use crate::user::UserArgument;
 use crate::user::UserId;
 use async_trait::async_trait;
-use chashmap::CHashMap;
-use rand::seq::SliceRandom;
+use dashmap::DashMap;
+use rand::prelude::IndexedRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -28,8 +28,8 @@ struct UserEntry {
 // TODO: FIXME: use async synchronization instead! locking on an async thread might be bad
 #[derive(Debug, Clone, Default)]
 pub struct ChannelChatters {
-    chatters: Arc<CHashMap<ChannelId, Arc<CHashMap<UserId, UserEntry>>>>,
-    channels: Arc<CHashMap<String, ChannelId>>,
+    chatters: Arc<DashMap<ChannelId, Arc<DashMap<UserId, UserEntry>>>>,
+    channels: Arc<DashMap<String, ChannelId>>,
     all_chatters: Arc<RwLock<AllChatters>>,
     all_channels: Arc<RwLock<AllChannels>>,
 }
@@ -221,9 +221,9 @@ impl ChannelChatters {
         ChannelChatters::default()
     }
 
-    pub async fn get<'a, 'b, T: 'a>(&self, user: T) -> Option<OwnedUser>
+    pub async fn get<'a, 'b, T>(&self, user: T) -> Option<OwnedUser>
     where
-        T: Into<UserArgument<'a>>,
+        T: 'a + Into<UserArgument<'a>>,
     {
         let argument = user.into();
 
@@ -261,7 +261,7 @@ impl ChannelChatters {
         if let Some(channel_id) = channel.user_id() {
             clear(self, channel_id, user_id, name);
         } else if let Some(channel_id) = self.channels.get(channel.username()) {
-            clear(self, *channel_id, user_id, name);
+            clear(self, channel_id.clone(), user_id, name);
         } else {
             // fallback clear all chatters from all channels D:
             self.chatters.clear();
@@ -288,8 +288,8 @@ impl ChannelChatters {
                     chatters.retain(|_key, value| {
                         message_id
                             .as_ref()
-                            .map_or(true, |message_id| &value.last_message_id != message_id)
-                            && login.map_or(true, |username| value.username != username)
+                            != Some(&value.last_message_id)
+                            && login.is_none_or(|username| value.username != username)
                     });
                 } else {
                     // fallback clear all chatters D:
@@ -301,7 +301,7 @@ impl ChannelChatters {
         if let Some(channel_id) = channel.user_id() {
             clear(self, channel_id, message_id, login);
         } else if let Some(channel_id) = self.channels.get(channel.username()) {
-            clear(self, *channel_id, message_id, login);
+            clear(self, channel_id.clone(), message_id, login);
         } else {
             // fallback clear all chatters from all channels D:
             self.chatters.clear();
@@ -329,7 +329,7 @@ impl ChannelChatters {
             if let Some(user_id) = sender.user_id() {
                 let chatters = self.chatters.get(&channel_id);
                 if let Some(chatters) = chatters {
-                    chatters.upsert(user_id, user_entry, |user| {
+                    chatters.entry(user_id).and_modify(|user| {
                         user.last_chatted = Instant::now();
                         if user.last_message != data {
                             user.last_message = data.to_owned();
@@ -343,13 +343,13 @@ impl ChannelChatters {
                         if user.display_name.as_deref() != sender.display_name() {
                             user.display_name = sender.display_name().map(String::from);
                         }
-                    });
+                    }).or_insert_with(user_entry);
                 } else {
                     drop(chatters);
-                    self.channels.insert(channel.username().into(), channel_id);
-                    let chatters = Arc::new(CHashMap::new());
+                    self.channels.insert(channel.username().into(), channel_id.clone());
+                    let chatters = Arc::new(DashMap::new());
                     chatters.insert(user_id, (user_entry)());
-                    self.chatters.insert(channel_id, chatters);
+                    self.chatters.insert(channel_id.clone(), chatters);
                 }
             }
         }
@@ -408,7 +408,7 @@ impl ChannelChatters {
                 true
             });
             let list = Arc::try_unwrap(result).unwrap().into_inner().unwrap();
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             return list.choose(&mut rng).map(|x| x.to_owned());
         }
         None

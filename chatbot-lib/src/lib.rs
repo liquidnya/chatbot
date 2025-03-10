@@ -39,10 +39,10 @@ mod tests {
         let command = next_argument_dyn(iter.next(), "channel")?;
         let url = next_argument_dyn(iter.next(), "url")?;
         let cooldown = next_argument_dyn(iter.next(), "cooldown")?;
-        let channel = FromCommandRequest::from_command_request_dyn(&request)
-            .map_err(|e| CommandError::RequestError(e))?;
+        let channel = FromCommandRequest::from_command_request_dyn(request)
+            .map_err(CommandError::RequestError)?;
 
-        let _result = song_add(command, url, cooldown, channel);
+        song_add(command, url, cooldown, channel);
         Ok(())
     }
 

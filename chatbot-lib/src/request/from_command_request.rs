@@ -72,5 +72,5 @@ impl_from_command_request! {
     impl<'a, 'req> |request| -> Bot<'req> { request.bot().clone() }
     impl<'a, 'req> |request| -> Command<'req> { request.command().clone() }
 
-    impl<'a, 'req> |request| -> ChannelChatters { request.context.map(|c| c.chatters()).unwrap_or_else(ChannelChatters::new) }
+    impl<'a, 'req> |request| -> ChannelChatters { request.context.map(|c| c.chatters()).unwrap_or_default() }
 }

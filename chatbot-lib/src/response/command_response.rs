@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use async_trait::async_trait;
-use tokio::io;
 
 pub struct Response<'a>(Option<Cow<'a, str>>, bool, bool);
 
@@ -25,7 +24,7 @@ impl<T> From<T> for CommandResponse<T> {
 
 #[async_trait]
 pub trait Responder {
-    async fn respond(&mut self, response: &Response<'_>) -> io::Result<()>;
+    async fn respond(&mut self, response: &Response<'_>) -> anyhow::Result<()>;
 }
 
 impl<'a> Response<'a> {

@@ -11,26 +11,18 @@ use crate::user::User;
 use async_trait::async_trait;
 use derive_more::{Deref, From};
 use fmt::Display;
-use futures_io::{AsyncRead, AsyncWrite};
 use state::TypeMap;
 use std::convert::TryFrom;
-use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
-use std::io::Write;
 use std::sync::Arc;
-use tokio_compat_02::FutureExt;
-use twitchchat::commands::privmsg;
-use twitchchat::connector::Connector;
-use twitchchat::messages::{ClearChat, Commands};
-use twitchchat::messages::{ClearMsg, Privmsg};
-use twitchchat::runner::Identity;
-use twitchchat::writer::AsyncWriter;
-use twitchchat::writer::MpscWriter;
-use twitchchat::AsyncRunner;
-use twitchchat::Encodable;
-use twitchchat::Status;
-use twitchchat::UserConfig;
+use tokio::sync::mpsc::UnboundedReceiver;
+use twitch_irc::login::LoginCredentials;
+use twitch_irc::message::{
+    ClearChatMessage, ClearMsgMessage, PrivmsgMessage, ServerMessage,
+};
+use twitch_irc::transport::Transport;
+use twitch_irc::{ClientConfig, TwitchIRCClient};
 
 #[derive(Debug, Clone, Deref, From)]
 pub struct State<'req, T: Send + Sync + 'static>(&'req T);
@@ -112,16 +104,17 @@ impl<'req> ChatBotContext<'req> {
     }
 }
 
-impl<'req> std::fmt::Debug for ChatBotContext<'req> {
+impl std::fmt::Debug for ChatBotContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         f.write_str("..")
     }
 }
 
-pub struct ChatBot<'a, C, P> {
-    connector: C,
+pub struct ChatBot<'a, T: Transport, L: LoginCredentials, P> {
+    incoming_messages: UnboundedReceiver<ServerMessage>,
+    client: TwitchIRCClient<T, L>,
     command_processor: P,
-    user_config: &'a UserConfig,
+    bot_login: &'a str,
     container: TypeMap![Send + Sync],
     channel_container: Option<&'a ChannelContainer>,
     chatters: ChannelChatters,
@@ -129,12 +122,14 @@ pub struct ChatBot<'a, C, P> {
     filter: Option<FilterPredicate>,
 }
 
-impl<'a, C> ChatBot<'a, C, ()> {
-    pub fn new(connector: C, user_config: &'a UserConfig) -> Self {
+impl<'a, T: Transport, L: LoginCredentials> ChatBot<'a, T, L, ()> {
+    pub fn new(bot_login: &'a str, config: ClientConfig<L>) -> Self {
+        let (incoming_messages, client) = TwitchIRCClient::<T, L>::new(config);
         Self {
-            connector,
+            incoming_messages,
+            client,
             command_processor: (),
-            user_config,
+            bot_login,
             container: <TypeMap![Send + Sync]>::new(),
             channel_container: Option::<&'a ChannelContainer>::None,
             chatters: ChannelChatters::new(),
@@ -143,14 +138,15 @@ impl<'a, C> ChatBot<'a, C, ()> {
         }
     }
 
-    pub fn with_command_processor<P>(self, command_processor: P) -> ChatBot<'a, C, P>
+    pub fn with_command_processor<P>(self, command_processor: P) -> ChatBot<'a, T, L, P>
     where
         P: CommandProcessor,
     {
         ChatBot {
-            connector: self.connector,
+            incoming_messages: self.incoming_messages,
+            client: self.client,
             command_processor,
-            user_config: self.user_config,
+            bot_login: self.bot_login,
             container: self.container,
             channel_container: self.channel_container,
             chatters: self.chatters,
@@ -160,8 +156,8 @@ impl<'a, C> ChatBot<'a, C, ()> {
     }
 }
 
-impl<'a, C, P> ChatBot<'a, C, P> {
-    pub fn with_state<T: Sync + Send + 'static>(self, state: T) -> Self {
+impl<'a, T: Transport, L: LoginCredentials, P> ChatBot<'a, T, L, P> {
+    pub fn with_state<S: Sync + Send + 'static>(self, state: S) -> Self {
         self.container.set(state); // TODO: do something if the state was already set
         self
     }
@@ -169,14 +165,15 @@ impl<'a, C, P> ChatBot<'a, C, P> {
     pub fn with_channel_state<'b, 'c: 'b>(
         self,
         channel_container: &'c ChannelContainer,
-    ) -> ChatBot<'b, C, P>
+    ) -> ChatBot<'b, T, L, P>
     where
         'a: 'b,
     {
         ChatBot {
-            connector: self.connector,
+            incoming_messages: self.incoming_messages,
+            client: self.client,
             command_processor: self.command_processor,
-            user_config: self.user_config,
+            bot_login: self.bot_login,
             container: self.container,
             channel_container: Some(channel_container),
             chatters: self.chatters,
@@ -185,14 +182,15 @@ impl<'a, C, P> ChatBot<'a, C, P> {
         }
     }
 
-    pub fn process_self<'b, 'c: 'b>(self) -> ChatBot<'b, C, P>
+    pub fn process_self<'b, 'c: 'b>(self) -> ChatBot<'b, T, L, P>
     where
         'a: 'b,
     {
         ChatBot {
-            connector: self.connector,
+            incoming_messages: self.incoming_messages,
+            client: self.client,
             command_processor: self.command_processor,
-            user_config: self.user_config,
+            bot_login: self.bot_login,
             container: self.container,
             channel_container: self.channel_container,
             chatters: self.chatters,
@@ -201,14 +199,15 @@ impl<'a, C, P> ChatBot<'a, C, P> {
         }
     }
 
-    pub fn filter<'b, 'c: 'b>(self, predicate: FilterPredicate) -> ChatBot<'b, C, P>
+    pub fn filter<'b, 'c: 'b>(self, predicate: FilterPredicate) -> ChatBot<'b, T, L, P>
     where
         'a: 'b,
     {
         ChatBot {
-            connector: self.connector,
+            incoming_messages: self.incoming_messages,
+            client: self.client,
             command_processor: self.command_processor,
-            user_config: self.user_config,
+            bot_login: self.bot_login,
             container: self.container,
             channel_container: self.channel_container,
             chatters: self.chatters,
@@ -222,38 +221,9 @@ impl<'a, C, P> ChatBot<'a, C, P> {
     }
 }
 
-#[derive(Debug)]
-pub enum IdentityError {
-    Anonymous,
-}
-
-impl fmt::Display for IdentityError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Anonymous user: No username found.")
-    }
-}
-
-impl Error for IdentityError {}
-
-impl<'a> TryFrom<&'a Identity> for Bot<'a> {
-    type Error = IdentityError;
-    fn try_from(value: &'a Identity) -> Result<Self, Self::Error> {
-        match value {
-            Identity::Anonymous { .. } => Err(IdentityError::Anonymous),
-            Identity::Basic { name, .. } => Ok(User::from_username(name).into()),
-            Identity::Full {
-                name,
-                user_id,
-                display_name,
-                ..
-            } => Ok(User::new(name, display_name.as_deref(), Some(*user_id)).into()),
-        }
-    }
-}
-
-impl<'a> From<&'a UserConfig> for Bot<'a> {
-    fn from(value: &'a UserConfig) -> Self {
-        User::from_username(&value.name).into()
+impl<'a> From<&'a str> for Bot<'a> {
+    fn from(value: &'a str) -> Self {
+        User::from_username(value).into()
     }
 }
 
@@ -270,10 +240,10 @@ impl fmt::Display for PrivmsgCommandError {
 
 impl Error for PrivmsgCommandError {}
 
-impl<'a> TryFrom<&'a Privmsg<'_>> for Command<'a> {
+impl<'a> TryFrom<&'a PrivmsgMessage> for Command<'a> {
     type Error = PrivmsgCommandError;
-    fn try_from(message: &'a Privmsg) -> Result<Self, Self::Error> {
-        let data = message.data().trim_start();
+    fn try_from(message: &'a PrivmsgMessage) -> Result<Self, Self::Error> {
+        let data = message.message_text.trim_start();
         if data.starts_with('!') {
             Ok(data.into())
         } else {
@@ -282,100 +252,60 @@ impl<'a> TryFrom<&'a Privmsg<'_>> for Command<'a> {
     }
 }
 
-impl<'a> From<&'a Privmsg<'_>> for Sender<'a> {
-    fn from(value: &'a Privmsg) -> Self {
-        let user_id = value.user_id().and_then(|value| value.try_into().ok()); // TODO: user_id is u64 instead of i64
+impl<'a> From<&'a PrivmsgMessage> for Sender<'a> {
+    fn from(value: &'a PrivmsgMessage) -> Self {
+        let user_id = Some(value.sender.id.clone());
         Sender::new(
-            User::new(value.name(), value.display_name(), user_id),
-            value.is_moderator(),
-            value.is_broadcaster(),
+            User::new(&value.sender.login, Some(&value.sender.name), user_id),
+            value.badges.iter().any(|badge| badge.name == "moderator"),
+            value.badges.iter().any(|badge| badge.name == "broadcaster"),
         )
     }
 }
 
-impl<'a> From<&'a Privmsg<'_>> for Channel<'a> {
-    fn from(value: &'a Privmsg) -> Self {
-        let user_id = value.room_id().and_then(|value| value.try_into().ok()); // TODO: user_id is u64 instead of i64
-        User::new(value.channel().trim_start_matches('#'), None, user_id).into()
+impl<'a> From<&'a PrivmsgMessage> for Channel<'a> {
+    fn from(value: &'a PrivmsgMessage) -> Self {
+        let user_id = Some(value.channel_id.clone());
+        // FIXME: removing '#' is probably not neccessary
+        User::new(value.channel_login.trim_start_matches('#'), None, user_id).into()
     }
 }
 
-impl<'a> From<&'a ClearChat<'_>> for Channel<'a> {
-    fn from(value: &'a ClearChat) -> Self {
-        let user_id = value.room_id().and_then(|value| value.parse().ok()); // TODO: user_id is u64 instead of i64
-        User::new(value.channel().trim_start_matches('#'), None, user_id).into()
+impl<'a> From<&'a ClearChatMessage> for Channel<'a> {
+    fn from(value: &'a ClearChatMessage) -> Self {
+        let user_id = Some(value.channel_id.clone());
+        // FIXME: removing '#' is probably not neccessary
+        User::new(value.channel_login.trim_start_matches('#'), None, user_id).into()
     }
 }
 
-impl<'a> From<&'a ClearMsg<'_>> for Channel<'a> {
-    fn from(value: &'a ClearMsg) -> Self {
-        let user_id = value.tags().get_parsed("room-id"); // TODO: user_id is u64 instead of i64
-        User::new(value.channel().trim_start_matches('#'), None, user_id).into()
+impl<'a> From<&'a ClearMsgMessage> for Channel<'a> {
+    fn from(value: &'a ClearMsgMessage) -> Self {
+        // FIXME: test this
+        let user_id = value.source.tags.0.get("room-id").cloned().flatten();
+        // FIXME: removing '#' is probably not neccessary
+        User::new(value.channel_login.trim_start_matches('#'), None, user_id).into()
     }
 }
 
-struct MessageHandler<'msg, P> {
+struct MessageHandler<'msg, T: Transport, L: LoginCredentials, P> {
     bot: &'msg Bot<'msg>,
     containers: Containers<'msg>,
     command_processor: &'msg P,
-    writer: AsyncWriter<MpscWriter>,
+    client: TwitchIRCClient<T, L>,
     chatters: ChannelChatters,
     ignore_self: bool,
     filter: Option<FilterPredicate>,
 }
 
-pub struct PrivmsgReply<'a> {
-    pub(crate) reply_to: &'a Privmsg<'a>,
-    pub(crate) msg: &'a str,
-}
-
-macro_rules! write_nl {
-    ($w:expr, $fmt:expr, $($args:expr),* $(,)?) => {{
-        write!($w, $fmt, $($args),*)?;
-        write!($w, "\r\n")
-    }};
-}
-
-impl<'a> Encodable for PrivmsgReply<'a> {
-    fn encode<W>(&self, buf: &mut W) -> std::io::Result<()>
-    where
-        W: Write + ?Sized,
-    {
-        log::trace!("reply message");
-        if !self.msg.trim_start().starts_with(|c| c == '.' || c == '/') {
-            // do not reply when using a twitch command
-            if let Some(id) = self.reply_to.tags().get("id") {
-                // find message id to reply to
-                return write_nl!(
-                    buf,
-                    "@reply-parent-msg-id={} PRIVMSG {} :{}",
-                    id,
-                    twitchchat::commands::Channel::new(self.reply_to.channel()),
-                    self.msg
-                );
-            }
-        }
-        write_nl!(
-            buf,
-            "PRIVMSG {} :{}",
-            twitchchat::commands::Channel::new(self.reply_to.channel()),
-            self.msg
-        )
-    }
-}
-
-pub const fn privmsg_reply<'a>(reply_to: &'a Privmsg<'a>, msg: &'a str) -> PrivmsgReply<'a> {
-    PrivmsgReply { reply_to, msg }
-}
-
-struct MessageResponder<'a> {
-    message: &'a Privmsg<'a>,
-    writer: &'a mut AsyncWriter<MpscWriter>,
+struct MessageResponder<'a, T: Transport, L: LoginCredentials> {
+    message: &'a PrivmsgMessage,
+    client: TwitchIRCClient<T, L>,
 }
 
 #[async_trait]
-impl<'a> Responder for MessageResponder<'a> {
-    async fn respond(&mut self, response: &crate::response::Response<'_>) -> tokio::io::Result<()> {
+impl<T: Transport, L: LoginCredentials> Responder for MessageResponder<'_, T, L> {
+    async fn respond(&mut self, response: &crate::response::Response<'_>) -> anyhow::Result<()> {
         if let Some(text) = response
             .response()
             // TODO: check if filter is necessary
@@ -388,11 +318,13 @@ impl<'a> Responder for MessageResponder<'a> {
             .filter(|response_text| !response_text.is_empty() && !response_text.trim().is_empty())
         {
             if response.reply() {
-                let message = privmsg_reply(self.message, text);
-                self.writer.encode(message).compat().await?;
+                self.client
+                    .say_in_reply_to(self.message, text.to_string())
+                    .await?;
             } else {
-                let message = privmsg(self.message.channel(), text);
-                self.writer.encode(message).compat().await?;
+                self.client
+                    .say(self.message.channel_login.clone(), text.to_string())
+                    .await?;
             }
         }
         Ok(())
@@ -404,7 +336,7 @@ struct Containers<'msg> {
     channel_container: Option<CachedChannelContainer<'msg>>,
 }
 
-impl<'msg, P> MessageHandler<'msg, P>
+impl<'msg, T: Transport, L: LoginCredentials, P> MessageHandler<'msg, T, L, P>
 where
     P: CommandProcessor,
 {
@@ -412,7 +344,7 @@ where
         bot: &'msg Bot<'msg>,
         containers: Containers<'msg>,
         command_processor: &'msg P,
-        writer: AsyncWriter<MpscWriter>,
+        client: TwitchIRCClient<T, L>,
         chatters: ChannelChatters,
         ignore_self: bool,
         filter: Option<FilterPredicate>,
@@ -421,34 +353,54 @@ where
             bot,
             containers,
             command_processor,
-            writer,
+            client,
             chatters,
             ignore_self,
             filter,
         }
     }
 
-    async fn clear_chat(&mut self, message: &'_ ClearChat<'_>) -> Result<(), Box<dyn Error>> {
+    async fn clear_chat(&mut self, message: &'_ ClearChatMessage) -> Result<(), Box<dyn Error>> {
+        let channel: Channel = message.into();
+
+        match &message.action {
+            twitch_irc::message::ClearChatAction::ChatCleared => {
+                self.chatters.clear_chat(&channel, None, None).await
+            }
+            twitch_irc::message::ClearChatAction::UserBanned {
+                user_login,
+                user_id,
+            } => {
+                self.chatters
+                    .clear_chat(&channel, Some(user_id.clone()), Some(user_login))
+                    .await
+            }
+            twitch_irc::message::ClearChatAction::UserTimedOut {
+                user_login,
+                user_id,
+                ..
+            } => {
+                self.chatters
+                    .clear_chat(&channel, Some(user_id.clone()), Some(user_login))
+                    .await
+            }
+        }
+        Ok(())
+    }
+
+    async fn clear_msg(&mut self, message: &'_ ClearMsgMessage) -> Result<(), Box<dyn Error>> {
         let channel: Channel = message.into();
         self.chatters
-            .clear_chat(
+            .clear_message(
                 &channel,
-                message.tags().get_parsed("target-user-id"),
-                message.name(),
+                Some(&message.message_id),
+                Some(&message.sender_login),
             )
             .await;
         Ok(())
     }
 
-    async fn clear_msg(&mut self, message: &'_ ClearMsg<'_>) -> Result<(), Box<dyn Error>> {
-        let channel: Channel = message.into();
-        self.chatters
-            .clear_message(&channel, message.target_msg_id(), message.login())
-            .await;
-        Ok(())
-    }
-
-    async fn handle(&mut self, message: &'_ Privmsg<'_>) -> Result<(), Box<dyn Error>> {
+    async fn handle(&mut self, message: &'_ PrivmsgMessage) -> Result<(), Box<dyn Error>> {
         let bot = self.bot;
         let container = self.containers.container;
 
@@ -456,22 +408,23 @@ where
         let sender: Sender = message.into();
 
         self.chatters
-            .notice_chatter(&channel, &sender, message.data(), "id")
+            .notice_chatter(&channel, &sender, &message.message_text, "id")
             .await;
 
         let mut responder = MessageResponder {
             message,
-            writer: &mut self.writer,
+            client: self.client.clone(),
         };
 
-        if let Some(msg_id) = message.tags().get("id") {
+        if let Some(msg_id) = Some(&message.message_id) {
             if let Some(filter) = self.filter.as_mut() {
                 // TODO: create context only once
                 let channel: Channel = message.into();
                 let sender: Sender = message.into();
                 let mut channel_container_rc = None;
                 if let Some(channel_container) = &mut self.containers.channel_container {
-                    channel_container_rc = Some(channel_container.get(message.channel()).await);
+                    channel_container_rc =
+                        Some(channel_container.get(&message.channel_login).await);
                 }
                 let context = ChatBotContext::new(
                     container,
@@ -481,10 +434,10 @@ where
                     &self.chatters,
                 );
                 let filter_request =
-                    FilterRequest::new(message.data(), sender, channel, bot, &context);
+                    FilterRequest::new(&message.message_text, sender, channel, bot, &context);
                 if !(filter)(filter_request, &mut responder).await {
                     self.chatters
-                        .clear_message(&message.into(), Some(msg_id), Some(message.name()))
+                        .clear_message(&message.into(), Some(msg_id), Some(&message.sender.login))
                         .await;
                     responder
                         .respond(
@@ -503,7 +456,7 @@ where
             // unpack channel container at the last moment possible
             let mut channel_container_rc = None;
             if let Some(channel_container) = &mut self.containers.channel_container {
-                channel_container_rc = Some(channel_container.get(message.channel()).await);
+                channel_container_rc = Some(channel_container.get(&message.channel_login).await);
             }
 
             let context = ChatBotContext::new(
@@ -529,10 +482,8 @@ where
     }
 }
 
-impl<'a, C, P> ChatBot<'a, C, P>
+impl<T: Transport, L: LoginCredentials, P> ChatBot<'_, T, L, P>
 where
-    C: Connector,
-    for<'o> &'o C::Output: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     P: CommandProcessor,
 {
     #[allow(clippy::needless_late_init)]
@@ -540,32 +491,16 @@ where
         self,
         channels: impl std::iter::IntoIterator<Item = &str>,
     ) -> Result<(), Box<dyn Error>> {
-        let user_config = self.user_config;
         let command_processor = self.command_processor;
         let channel_container = self.channel_container;
         let bot: Bot;
         let mut container = self.container;
-        let mut runner;
         let mut handler;
 
         container.freeze();
-        runner = AsyncRunner::connect(self.connector, user_config)
-            .compat()
-            .await?;
-        let identity = runner.identity.clone(); // TODO: store bot user somewhere in memeory
-        bot = (&identity)
-            .try_into()
-            .unwrap_or_else(|_| user_config.into());
+        bot = self.bot_login.into();
 
         log::info!("Connected as {}", bot.username());
-
-        // TODO: join channels
-        //runner.join(bot.username()).compat().await?;
-        //log::info!("Joined channel {}", bot.username());
-        for channel in channels {
-            runner.join(channel).compat().await?;
-            log::info!("Joined channel {}", channel);
-        }
 
         let containers = Containers {
             container: &container,
@@ -576,29 +511,36 @@ where
             &bot,
             containers,
             &command_processor,
-            runner.writer(),
+            self.client.clone(),
             self.chatters.clone(),
             self.ignore_self,
             self.filter,
         );
+        let incoming_messages = self.incoming_messages;
 
-        loop {
-            // TODO: add CTRL+C detection!
-            let message = runner.next_message().compat().await?;
-            match message {
-                Status::Message(commands) => {
-                    log::trace!("Message: {:#?}", commands);
-                    match commands {
-                        Commands::Privmsg(message) => handler.handle(&message).await?,
-                        Commands::ClearChat(message) => handler.clear_chat(&message).await?,
-                        Commands::ClearMsg(message) => handler.clear_msg(&message).await?,
-                        Commands::Ping(_) | Commands::Pong(_) => {}
-                        _ => {}
+        // join channels
+        self.client
+            .set_wanted_channels(channels.into_iter().map(|x| x.to_string()).collect())?;
+
+            let mut incoming_messages = incoming_messages;
+            while let Some(message) = incoming_messages.recv().await {
+                log::trace!("Message: {:#?}", message);
+                match message {
+                    ServerMessage::ClearChat(message) => 
+                        if handler.clear_chat(&message).await.is_err() {
+                            break;
+                        }
+                    
+                    ServerMessage::ClearMsg(message) => if handler.clear_msg(&message).await.is_err() {
+                        break;
                     }
+                    ServerMessage::Privmsg(message) => if handler.handle(&message).await.is_err() {
+                        break;
+                    }
+                    _ => {}
                 }
-                Status::Quit | Status::Eof => break,
             }
-        }
+
         Ok(())
     }
 }

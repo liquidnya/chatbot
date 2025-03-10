@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use super::CommandArguments;
 use itertools::Itertools;
 
@@ -20,12 +22,12 @@ fn find_prefix_index(a: &str, b: &str) -> usize {
 }
 */
 
-impl<'a> ToString for FindSharedSyntax<'a> {
-    fn to_string(&self) -> String {
+impl Display for FindSharedSyntax<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.choice.is_empty() {
-            self.prefix.as_str().to_string()
+            write!(f, "{}", self.prefix.as_str())
         } else {
-            format!("{} {}", self.prefix.as_str(), self.choice.iter().join("|"))
+            write!(f, "{} {}", self.prefix.as_str(), self.choice.iter().join("|"))
         }
     }
 }
@@ -82,6 +84,6 @@ mod test {
     fn test_find_prefix_index() {
         let mut find = FindSharedSyntax::new("!song add <command> <url> <cooldown..>");
         find.append("!song rm <command>");
-        println!("{}", find.to_string());
+        println!("{}", find);
     }
 }

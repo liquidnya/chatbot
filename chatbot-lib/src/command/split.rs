@@ -96,9 +96,9 @@ impl<'a> Iterator for CommandArguments<'a> {
     }
 }
 
-impl<'a> FusedIterator for CommandArguments<'a> {}
+impl FusedIterator for CommandArguments<'_> {}
 
-impl<'a> DoubleEndedIterator for CommandArguments<'a> {
+impl DoubleEndedIterator for CommandArguments<'_> {
     fn next_back(&mut self) -> Option<<Self as Iterator>::Item> {
         let std::ops::Range { start, end } = self.range;
         self.str[start..end]

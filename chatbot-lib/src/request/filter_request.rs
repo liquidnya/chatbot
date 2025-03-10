@@ -9,7 +9,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub type FilterPredicate = Box<
-    dyn for<'req> FnMut(
+dyn
+     for<'req> FnMut(
         FilterRequest<'req>,
         &'req mut dyn Responder,
     ) -> Pin<Box<dyn Future<Output = bool> + 'req>>,

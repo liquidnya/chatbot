@@ -17,11 +17,11 @@ pub(crate) struct CachedChannelContainer<'a> {
     container: &'a ChannelContainer,
 }
 
-impl<'a> CachedChannelContainer<'a> {
-    pub async fn get<'b, T: ?Sized>(&'b mut self, channel: &T) -> Rc<Arc<TypeMap![Send + Sync]>>
+impl CachedChannelContainer<'_> {
+    pub async fn get<T>(&'_ mut self, channel: &T) -> Rc<Arc<TypeMap![Send + Sync]>>
     where
         String: Borrow<T>,
-        T: Eq + Hash + ToOwned<Owned = String>,
+        T: ?Sized + Eq + Hash + ToOwned<Owned = String>,
     {
         match self.cache.get(channel) {
             Some(channel) => channel.clone(),
@@ -73,7 +73,7 @@ pub struct ChannelContainer {
 #[derive(From)]
 pub struct ChannelContainerGuard<'a>(RwLockReadGuard<'a, TypeMap![Send + Sync]>);
 
-impl<'a> core::ops::Deref for ChannelContainerGuard<'a> {
+impl core::ops::Deref for ChannelContainerGuard<'_> {
     type Target = TypeMap![Send + Sync];
 
     fn deref(&self) -> &Self::Target {
@@ -96,18 +96,18 @@ impl ChannelContainer {
         }
     }
 
-    pub async fn get_arc<T: ?Sized>(&self, channel: &T) -> Arc<TypeMap![Send + Sync]>
+    pub async fn get_arc<T>(&self, channel: &T) -> Arc<TypeMap![Send + Sync]>
     where
         String: Borrow<T>,
-        T: Eq + Hash + ToOwned<Owned = String>,
+        T: ?Sized + Eq + Hash + ToOwned<Owned = String>,
     {
-        fn get_channel_container<K: ?Sized>(
+        fn get_channel_container<K>(
             map: RwLockReadGuard<'_, HashMap<String, Arc<TypeMap![Send + Sync]>>>,
             channel: &K,
         ) -> Option<Arc<TypeMap![Send + Sync]>>
         where
             String: Borrow<K>,
-            K: Eq + Hash,
+            K: ?Sized + Eq + Hash,
         {
             tokio::sync::RwLockReadGuard::<'_, HashMap<String, Arc<TypeMap![Send + Sync]>>>::try_map(
                 map,
@@ -137,18 +137,18 @@ impl ChannelContainer {
         container
     }
 
-    pub async fn get<T: ?Sized>(&self, channel: &T) -> ChannelContainerGuard<'_>
+    pub async fn get<T>(&self, channel: &T) -> ChannelContainerGuard<'_>
     where
         String: Borrow<T>,
-        T: Eq + Hash + ToOwned<Owned = String>,
+        T: ?Sized + Eq + Hash + ToOwned<Owned = String>,
     {
-        fn get_channel_guard<'a, K: ?Sized>(
+        fn get_channel_guard<'a, K>(
             map: RwLockReadGuard<'a, HashMap<String, Arc<TypeMap![Send + Sync]>>>,
             channel: &K,
         ) -> Option<ChannelContainerGuard<'a>>
         where
             String: Borrow<K>,
-            K: Eq + Hash,
+            K: ?Sized + Eq + Hash,
         {
             tokio::sync::RwLockReadGuard::<'_, HashMap<String, Arc<TypeMap![Send + Sync]>>>::try_map(
                 map,

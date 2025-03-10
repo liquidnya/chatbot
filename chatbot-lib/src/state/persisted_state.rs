@@ -73,7 +73,7 @@ impl<'a, 'req, T: PersistedType> FromCommandRequest<'a, 'req> for PersistedChann
     }
 }
 
-impl<'a, T: PersistedType> PersistedChannelState<'a, T> {
+impl<T: PersistedType> PersistedChannelState<'_, T> {
     pub async fn read(&self) -> Arc<T> {
         match self.inner.load().deref() {
             Some(value) => value.clone(),

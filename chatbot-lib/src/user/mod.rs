@@ -3,7 +3,8 @@ mod user_argument;
 pub use self::user_argument::UserArgument;
 use std::mem;
 
-pub type UserId = i64;
+// FIXME: this should be &'a str
+pub type UserId = String;
 pub type ChannelId = UserId;
 
 #[derive(Debug, Clone)]
@@ -54,13 +55,13 @@ impl<'a> User<'a> {
     }
 
     pub fn user_id(&self) -> Option<UserId> {
-        self.user_id
+        self.user_id.clone()
     }
 }
 
-impl<'a> PartialEq for User<'a> {
+impl PartialEq for User<'_> {
     fn eq(&self, other: &Self) -> bool {
-        match (self.user_id, other.user_id) {
+        match (&self.user_id, &other.user_id) {
             (Some(a), Some(b)) => a == b,
             _ => self.username == other.username,
         }
@@ -114,7 +115,7 @@ impl OwnedUser {
     pub fn set_user_id(&mut self, user_id: Option<UserId>) -> Option<UserId> {
         if self.user_id.is_none() && user_id.is_some() {
             self.user_id = user_id;
-            self.user_id
+            self.user_id.clone()
         } else {
             None
         }
@@ -129,13 +130,13 @@ impl OwnedUser {
     }
 
     pub fn user_id(&self) -> Option<UserId> {
-        self.user_id
+        self.user_id.clone()
     }
 }
 
 impl PartialEq for OwnedUser {
     fn eq(&self, other: &Self) -> bool {
-        match (self.user_id, other.user_id) {
+        match (&self.user_id, &other.user_id) {
             (Some(a), Some(b)) => a == b,
             _ => self.username == other.username,
         }

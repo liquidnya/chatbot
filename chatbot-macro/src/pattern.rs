@@ -113,13 +113,13 @@ impl<'a> From<&'a str> for CommandPattern<'a> {
     }
 }
 
-impl<'a> std::borrow::Borrow<str> for CommandPattern<'a> {
+impl std::borrow::Borrow<str> for CommandPattern<'_> {
     fn borrow(&self) -> &str {
         self.key()
     }
 }
 
-impl<'a> std::hash::Hash for CommandPattern<'a> {
+impl std::hash::Hash for CommandPattern<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.key().hash(state);
     }

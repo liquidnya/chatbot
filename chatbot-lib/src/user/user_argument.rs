@@ -29,7 +29,7 @@ impl<'a> UserArgument<'a> {
     }
 }
 
-impl<'a> Display for UserArgument<'a> {
+impl Display for UserArgument<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         if f.alternate() {
             write!(f, "{}", self.0)
@@ -39,12 +39,11 @@ impl<'a> Display for UserArgument<'a> {
     }
 }
 
-impl<'a> PartialEq<User<'_>> for UserArgument<'a> {
+impl PartialEq<User<'_>> for UserArgument<'_> {
     fn eq(&self, other: &User<'_>) -> bool {
         self.0 == other.username()
-            || other
+            || Some(self.0) == other
                 .display_name()
-                .map_or(false, |display_name| self.0 == display_name)
         // TODO: this is expensive and maybe not even wanted
         // || self.0.to_ascii_lowercase() == other.username()
     }
